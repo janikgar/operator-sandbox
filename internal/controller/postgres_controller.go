@@ -18,15 +18,22 @@ package controller
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"strings"
 
+	apps "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	dbv1alpha1 "github.com/janikgar/operator-sandbox/api/v1alpha1"
 )
+
+func ptr[T any](d T) *T {
+	return &d
+}
 
 // PostgresReconciler reconciles a Postgres object
 type PostgresReconciler struct {
@@ -68,8 +75,11 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return pg.Spec.Role == dbv1alpha1.Primary
 	}
 
-	getTargetStatus := func(thisPostgres *dbv1alpha1.Postgres) (error, []dbv1alpha1.TargetStatus) {
-		var status []dbv1alpha1.TargetStatus
+	getTargetStatus := func(thisPostgres *dbv1alpha1.Postgres) ([]dbv1alpha1.TargetStatus, error) {
+		status := []dbv1alpha1.TargetStatus{}
+		if len(thisPostgres.Spec.Targets) == 0 {
+			return status, nil
+		}
 		for _, pg := range postgresList.Items {
 			for _, claimedReplica := range thisPostgres.Spec.Targets {
 				if pg.Name == claimedReplica {
@@ -80,19 +90,55 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				}
 			}
 		}
-		if status == nil {
-			return errors.New("no replicas available"), nil
+		if len(status) == len(thisPostgres.Spec.Targets) {
+			return nil, fmt.Errorf("found %d replicas of %d", len(status), len(thisPostgres.Spec.Targets))
 		}
-		return nil, status
+		return status, nil
 	}
 
+	var stsList apps.StatefulSetList
+
+	// selector := labels.NewSelector()
+	// req1, err := labels.NewRequirement("managed-by", selection.Equals, []string{"pgoperator"})
+	// if err != nil {
+	// 	return ctrl.Result{}, err
+	// }
+	// req2, err := labels.NewRequirement("postgres-name", selection.Equals, []string{postgres.Name})
+	// if err != nil {
+	// 	return ctrl.Result{}, err
+	// }
+	// selector.Add(*req1, *req2)
+	// // selector := labels.SelectorFromSet(labels.Set{
+	// // 	"managed-by":    "pgoperator",
+	// // 	"postgres-name": postgres.Name,
+	// // })
+	if err := r.List(ctx, &stsList, client.InNamespace(req.Namespace)); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	postgres.Status.Available = false
 	postgres.Status.Role = dbv1alpha1.Replica
 	postgres.Status.Databases = []string{}
 	postgres.Status.TargetStatus = []dbv1alpha1.TargetStatus{}
 
+	if len(stsList.Items) == 0 {
+		managedObjects := []client.Object{
+			postgres.GenerateSA(),
+			postgres.GenerateCM(),
+			postgres.GenerateSTS(),
+		}
+
+		for _, managedObject := range managedObjects {
+			if err := r.Create(ctx, managedObject, &client.CreateOptions{FieldManager: "pgoperator"}); err != nil {
+				return ctrl.Result{}, fmt.Errorf("could not create object %s/%s: %e", managedObject.GetObjectKind(), managedObject.GetName(), err)
+			}
+		}
+		postgres.Status.Available = true
+	}
+
 	if isPrimary(&postgres) {
 		postgres.Status.Role = dbv1alpha1.Primary
-		err, targetStatus := getTargetStatus(&postgres)
+		targetStatus, err := getTargetStatus(&postgres)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -102,6 +148,34 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err := r.Status().Update(ctx, &postgres); err != nil {
 		log.Log.Error(err, "could not update Postgres status")
 		return ctrl.Result{}, err
+	}
+
+	finalizerName := "db.janikgar.lan/finalizer"
+
+	if postgres.DeletionTimestamp.IsZero() {
+		if !controllerutil.ContainsFinalizer(&postgres, finalizerName) {
+			controllerutil.AddFinalizer(&postgres, finalizerName)
+			if err := r.Update(ctx, &postgres); err != nil {
+				return ctrl.Result{}, fmt.Errorf("could not add finalizer: %e", err)
+			}
+		}
+	} else {
+		if controllerutil.ContainsFinalizer(&postgres, finalizerName) {
+			managedObjects := []client.Object{
+				postgres.GenerateSA(),
+				postgres.GenerateCM(),
+				postgres.GenerateSTS(),
+			}
+			for _, managedObject := range managedObjects {
+				var errors []string
+				if err := r.Delete(ctx, managedObject); err != nil {
+					errors = append(errors, fmt.Sprintf("could not delete object %s/%s: %e", managedObject.GetObjectKind(), managedObject.GetName(), err))
+				}
+				if len(errors) > 0 {
+					return ctrl.Result{}, fmt.Errorf(strings.Join(errors, ";"))
+				}
+			}
+		}
 	}
 
 	return ctrl.Result{}, nil
