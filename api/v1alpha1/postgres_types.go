@@ -145,7 +145,7 @@ func (pg *Postgres) GenerateSecrets() *core.Secret {
 }
 
 func (pg *Postgres) GenerateSTS() *apps.StatefulSet {
-	chosenSecret := pg.Name
+	chosenSecret := fmt.Sprintf("postgresql-%s", pg.Name)
 	if pg.Spec.Role == Replica {
 		chosenSecret = fmt.Sprintf("postgresql-%s", pg.Spec.Source)
 	}
