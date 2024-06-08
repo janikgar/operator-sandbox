@@ -9,20 +9,20 @@ metadata:
   name: blue
 spec:
   role: Primary
-  targets: []
+  # targets: []
   # - green
   # - red
 ---
-# apiVersion: db.janikgar.lan/v1alpha1
-# kind: Postgres
-# metadata:
-#   labels:
-#     app.kubernetes.io/name: operator-sandbox
-#     app.kubernetes.io/managed-by: kustomize
-#   name: green
-# spec:
-#   role: Replica
-#   targets: []
+apiVersion: db.janikgar.lan/v1alpha1
+kind: Postgres
+metadata:
+  labels:
+    app.kubernetes.io/name: operator-sandbox
+    app.kubernetes.io/managed-by: kustomize
+  name: green
+spec:
+  role: Replica
+  source: blue
 # ---
 # apiVersion: db.janikgar.lan/v1alpha1
 # kind: Postgres

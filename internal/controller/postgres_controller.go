@@ -19,9 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
-	apps "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,8 +31,12 @@ import (
 	dbv1alpha1 "github.com/janikgar/operator-sandbox/api/v1alpha1"
 )
 
-func ptr[T any](d T) *T {
-	return &d
+// func ptr[T any](d T) *T {
+// 	return &d
+// }
+
+func objName(obj client.Object) string {
+	return fmt.Sprintf("%s/%s", reflect.TypeOf(obj).String(), obj.GetName())
 }
 
 // PostgresReconciler reconciles a Postgres object
@@ -77,45 +81,19 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return pg.Spec.Role == dbv1alpha1.Primary
 	}
 
-	getTargetStatus := func(thisPostgres *dbv1alpha1.Postgres) ([]dbv1alpha1.TargetStatus, error) {
-		status := []dbv1alpha1.TargetStatus{}
-		if len(thisPostgres.Spec.Targets) == 0 {
-			return status, nil
+	getSourceStatus := func(thisPostgres *dbv1alpha1.Postgres) error {
+		if thisPostgres.Spec.Role == dbv1alpha1.Primary {
+			return nil
 		}
 		for _, pg := range postgresList.Items {
-			for _, claimedReplica := range thisPostgres.Spec.Targets {
-				if pg.Name == claimedReplica {
-					status = append(status, dbv1alpha1.TargetStatus{
-						Name:      pg.Name,
-						Available: true,
-					})
-				}
+			if pg.Name == thisPostgres.Spec.Source {
+				pg.Status.TargetStatus = append(pg.Status.TargetStatus, dbv1alpha1.TargetStatus{
+					Name:      thisPostgres.ObjectMeta.Name,
+					Available: thisPostgres.Status.Available,
+				})
 			}
 		}
-		if len(status) == len(thisPostgres.Spec.Targets) {
-			return nil, fmt.Errorf("found %d replicas of %d", len(status), len(thisPostgres.Spec.Targets))
-		}
-		return status, nil
-	}
-
-	var stsList apps.StatefulSetList
-
-	// selector := labels.NewSelector()
-	// req1, err := labels.NewRequirement("managed-by", selection.Equals, []string{"pgoperator"})
-	// if err != nil {
-	// 	return ctrl.Result{}, err
-	// }
-	// req2, err := labels.NewRequirement("postgres-name", selection.Equals, []string{postgres.Name})
-	// if err != nil {
-	// 	return ctrl.Result{}, err
-	// }
-	// selector.Add(*req1, *req2)
-	// // selector := labels.SelectorFromSet(labels.Set{
-	// // 	"managed-by":    "pgoperator",
-	// // 	"postgres-name": postgres.Name,
-	// // })
-	if err := r.List(ctx, &stsList, client.InNamespace(req.Namespace)); err != nil {
-		return ctrl.Result{}, err
+		return nil
 	}
 
 	postgres.Status.Available = false
@@ -123,30 +101,38 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	postgres.Status.Databases = []string{}
 	postgres.Status.TargetStatus = []dbv1alpha1.TargetStatus{}
 
-	if len(stsList.Items) == 0 {
-		managedObjects := []client.Object{
-			postgres.GenerateSA(),
-			postgres.GenerateCM(),
-			postgres.GenerateSecrets(),
-			postgres.GenerateSTS(),
+	managedObjects := []client.Object{
+		postgres.GenerateSA(),
+		postgres.GenerateCM(),
+		postgres.GenerateSecrets(),
+		postgres.GenerateSTS(),
+	}
+
+	for _, managedObject := range managedObjects {
+		if fmt.Sprintf("%v", managedObject) == "nil" {
+			continue
 		}
 
-		for _, managedObject := range managedObjects {
-			if err := r.Create(ctx, managedObject, &client.CreateOptions{FieldManager: "pgoperator"}); err != nil {
-				return ctrl.Result{}, fmt.Errorf("could not create object %s/%s: %e", managedObject.GetObjectKind().GroupVersionKind(), managedObject.GetName(), err)
-			}
-			log.Log.Info(fmt.Sprintf("created %s/%s", managedObject.GetObjectKind().GroupVersionKind().Kind, managedObject.GetName()))
+		err := r.Get(ctx, client.ObjectKeyFromObject(managedObject), managedObject)
+		if err == nil {
+			log.Log.Info(fmt.Sprintf("object %s already exists; skipping", objName(managedObject)))
+			continue
 		}
-		postgres.Status.Available = true
+
+		if err := r.Create(ctx, managedObject, &client.CreateOptions{FieldManager: "pgoperator"}); err != nil {
+			return ctrl.Result{}, fmt.Errorf("could not create object %s: %e", objName(managedObject), err)
+		}
+		log.Log.Info(fmt.Sprintf("created %s", objName(managedObject)))
 	}
+	postgres.Status.Available = true
 
 	if isPrimary(&postgres) {
 		postgres.Status.Role = dbv1alpha1.Primary
-		targetStatus, err := getTargetStatus(&postgres)
-		if err != nil {
+	} else {
+		postgres.Status.Role = dbv1alpha1.Replica
+		if err := getSourceStatus(&postgres); err != nil {
 			return ctrl.Result{}, err
 		}
-		postgres.Status.TargetStatus = targetStatus
 	}
 
 	if err := r.Status().Update(ctx, &postgres); err != nil {
@@ -172,10 +158,13 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				postgres.GenerateSTS(),
 			}
 			for _, managedObject := range managedObjects {
+				if fmt.Sprintf("%v", managedObject) == "nil" {
+					continue
+				}
 				var errors []string
-				log.Log.Info(fmt.Sprintf("deleting managed object %s/%s", managedObject.GetObjectKind().GroupVersionKind(), managedObject.GetName()))
+				log.Log.Info(fmt.Sprintf("deleting managed object %s", objName(managedObject)))
 				if err := r.Delete(ctx, managedObject); err != nil {
-					errors = append(errors, fmt.Sprintf("could not delete object %s/%s: %e", managedObject.GetObjectKind().GroupVersionKind(), managedObject.GetName(), err))
+					errors = append(errors, fmt.Sprintf("could not delete object %s: %e", objName(managedObject), err))
 				}
 				if len(errors) > 0 {
 					return ctrl.Result{}, fmt.Errorf(strings.Join(errors, ";"))

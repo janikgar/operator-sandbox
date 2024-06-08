@@ -44,13 +44,10 @@ spec:
                 - Primary
                 - Replica
                 type: string
-              targets:
-                items:
-                  type: string
-                type: array
+              source:
+                type: string
             required:
             - role
-            - targets
             type: object
           status:
             description: PostgresStatus defines the observed state of Postgres

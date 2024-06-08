@@ -41,8 +41,8 @@ type PostgresSpec struct {
 	// Important: Run "make" to regenerate code after modifying this file
 
 	//+kubebuilder:validation:Enum=Primary;Replica
-	Role    DBRole   `json:"role"`
-	Targets []string `json:"targets"`
+	Role   DBRole `json:"role"`
+	Source string `json:"source,omitempty"`
 }
 
 type TargetStatus struct {
@@ -123,7 +123,10 @@ func (pg *Postgres) GenerateCM() *core.ConfigMap {
 }
 
 func (pg *Postgres) GenerateSecrets() *core.Secret {
-	return &core.Secret{
+	if pg.Spec.Role == Replica {
+		return nil
+	}
+	secret := core.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("postgresql-%s", pg.Name),
 			Namespace: pg.Namespace,
@@ -138,9 +141,14 @@ func (pg *Postgres) GenerateSecrets() *core.Secret {
 			"USER_PASSWORD":        "user",
 		},
 	}
+	return &secret
 }
 
 func (pg *Postgres) GenerateSTS() *apps.StatefulSet {
+	chosenSecret := pg.Name
+	if pg.Spec.Role == Replica {
+		chosenSecret = fmt.Sprintf("postgresql-%s", pg.Spec.Source)
+	}
 	sts := apps.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("postgresql-%s", pg.Name),
@@ -332,7 +340,7 @@ func (pg *Postgres) GenerateSTS() *apps.StatefulSet {
 										SecretKeyRef: &core.SecretKeySelector{
 											Key: "ADMIN_PASSWORD",
 											LocalObjectReference: core.LocalObjectReference{
-												Name: fmt.Sprintf("postgresql-%s", pg.Name),
+												Name: chosenSecret,
 											},
 										},
 									},
@@ -343,7 +351,7 @@ func (pg *Postgres) GenerateSTS() *apps.StatefulSet {
 										SecretKeyRef: &core.SecretKeySelector{
 											Key: "REPLICATION_PASSWORD",
 											LocalObjectReference: core.LocalObjectReference{
-												Name: fmt.Sprintf("postgresql-%s", pg.Name),
+												Name: chosenSecret,
 											},
 										},
 									},
