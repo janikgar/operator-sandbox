@@ -61,8 +61,10 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	var postgres dbv1alpha1.Postgres
 	if err := r.Get(ctx, req.NamespacedName, &postgres); err != nil {
-		log.Log.Error(err, "could not get Postgres")
-		return ctrl.Result{}, client.IgnoreNotFound((err))
+		if client.IgnoreNotFound(err) != nil {
+			log.Log.Error(err, "could not get Postgres")
+		}
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	var postgresList dbv1alpha1.PostgresList
@@ -132,6 +134,7 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			if err := r.Create(ctx, managedObject, &client.CreateOptions{FieldManager: "pgoperator"}); err != nil {
 				return ctrl.Result{}, fmt.Errorf("could not create object %s/%s: %e", managedObject.GetObjectKind(), managedObject.GetName(), err)
 			}
+			log.Log.Info(fmt.Sprintf("created %s/%s", managedObject.GetObjectKind().GroupVersionKind().Kind, managedObject.GetName()))
 		}
 		postgres.Status.Available = true
 	}
@@ -156,7 +159,7 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if !controllerutil.ContainsFinalizer(&postgres, finalizerName) {
 			controllerutil.AddFinalizer(&postgres, finalizerName)
 			if err := r.Update(ctx, &postgres); err != nil {
-				return ctrl.Result{}, fmt.Errorf("could not add finalizer: %e", err)
+				return ctrl.Result{}, fmt.Errorf("could not add finalizer to %s: %e", postgres.Name, err)
 			}
 		}
 	} else {
@@ -175,6 +178,11 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					return ctrl.Result{}, fmt.Errorf(strings.Join(errors, ";"))
 				}
 			}
+			controllerutil.RemoveFinalizer(&postgres, finalizerName)
+			if err := r.Update(ctx, &postgres); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
 		}
 	}
 

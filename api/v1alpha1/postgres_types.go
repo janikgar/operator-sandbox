@@ -108,7 +108,7 @@ func (pg *Postgres) GenerateSA() *core.ServiceAccount {
 func (pg *Postgres) GenerateCM() *core.ConfigMap {
 	cm := core.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("postgresql-%s", pg.Name),
+			Name:      fmt.Sprintf("postgresql-%s-primary-extended-configuration", pg.Name),
 			Namespace: pg.Namespace,
 			Labels: map[string]string{
 				"managed-by":    "pgoperator",
@@ -175,9 +175,8 @@ func (pg *Postgres) GenerateSTS() *apps.StatefulSet {
 											"/bin/sh",
 											"-c",
 											"-e",
-											`| 
-													exec pg_isready -U \"postgres\" -h 127.0.0.1 -p 5432
-													[ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]`,
+											`exec pg_isready -U \"postgres\" -h 127.0.0.1 -p 5432
+[ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]`,
 										},
 									},
 								},
@@ -337,14 +336,12 @@ func (pg *Postgres) GenerateSTS() *apps.StatefulSet {
 							Command: []string{
 								"/bin/sh",
 								"-ec",
-								`|
-									chown 1001:1001 /bitnami/postgresql
-									mkdir -p /bitnami/postgresql/data
-									chmod 700 /bitnami/postgresql/data
-									find /bitnami/postgresql -mindepth 1 -maxdepth 1 -not -name "conf" -not -name ".snapshot" -not -name "lost+found" | \
-										xargs -r chown -R 1001:1001
-									chmod -R 777 /dev/shm
-								`,
+								`chown 1001:1001 /bitnami/postgresql
+mkdir -p /bitnami/postgresql/data
+chmod 700 /bitnami/postgresql/data
+find /bitnami/postgresql -mindepth 1 -maxdepth 1 -not -name "conf" -not -name ".snapshot" -not -name "lost+found" | \
+xargs -r chown -R 1001:1001
+chmod -R 777 /dev/shm`,
 							},
 							Image: "docker.io/bitnami/os-shell:12-debian-12-r16",
 							SecurityContext: &core.SecurityContext{
