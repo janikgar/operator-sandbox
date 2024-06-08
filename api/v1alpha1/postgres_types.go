@@ -115,8 +115,29 @@ func (pg *Postgres) GenerateCM() *core.ConfigMap {
 				"postgres-name": pg.Name,
 			},
 		},
+		Data: map[string]string{
+			"override.conf": "",
+		},
 	}
 	return &cm
+}
+
+func (pg *Postgres) GenerateSecrets() *core.Secret {
+	return &core.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("postgresql-%s", pg.Name),
+			Namespace: pg.Namespace,
+			Labels: map[string]string{
+				"managed-by":    "pgoperator",
+				"postgres-name": pg.Name,
+			},
+		},
+		StringData: map[string]string{
+			"ADMIN_PASSWORD":       "admin",
+			"REPLICATION_PASSWORD": "repl",
+			"USER_PASSWORD":        "user",
+		},
+	}
 }
 
 func (pg *Postgres) GenerateSTS() *apps.StatefulSet {
@@ -311,7 +332,7 @@ func (pg *Postgres) GenerateSTS() *apps.StatefulSet {
 										SecretKeyRef: &core.SecretKeySelector{
 											Key: "ADMIN_PASSWORD",
 											LocalObjectReference: core.LocalObjectReference{
-												Name: "postgresql",
+												Name: fmt.Sprintf("postgresql-%s", pg.Name),
 											},
 										},
 									},
@@ -322,7 +343,7 @@ func (pg *Postgres) GenerateSTS() *apps.StatefulSet {
 										SecretKeyRef: &core.SecretKeySelector{
 											Key: "REPLICATION_PASSWORD",
 											LocalObjectReference: core.LocalObjectReference{
-												Name: "postgresql",
+												Name: fmt.Sprintf("postgresql-%s", pg.Name),
 											},
 										},
 									},
@@ -345,14 +366,14 @@ chmod -R 777 /dev/shm`,
 							},
 							Image: "docker.io/bitnami/os-shell:12-debian-12-r16",
 							SecurityContext: &core.SecurityContext{
-								AllowPrivilegeEscalation: ptr(false),
+								AllowPrivilegeEscalation: ptr(true),
 								Capabilities: &core.Capabilities{
 									Drop: []core.Capability{"ALL"},
 								},
-								Privileged:             ptr(false),
+								Privileged:             ptr(true),
 								ReadOnlyRootFilesystem: ptr(false),
 								RunAsGroup:             ptr(int64(0)),
-								RunAsUser:              ptr(int64(1001)),
+								RunAsUser:              ptr(int64(0)),
 							},
 							VolumeMounts: []core.VolumeMount{
 								{

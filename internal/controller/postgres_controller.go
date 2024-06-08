@@ -127,12 +127,13 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		managedObjects := []client.Object{
 			postgres.GenerateSA(),
 			postgres.GenerateCM(),
+			postgres.GenerateSecrets(),
 			postgres.GenerateSTS(),
 		}
 
 		for _, managedObject := range managedObjects {
 			if err := r.Create(ctx, managedObject, &client.CreateOptions{FieldManager: "pgoperator"}); err != nil {
-				return ctrl.Result{}, fmt.Errorf("could not create object %s/%s: %e", managedObject.GetObjectKind(), managedObject.GetName(), err)
+				return ctrl.Result{}, fmt.Errorf("could not create object %s/%s: %e", managedObject.GetObjectKind().GroupVersionKind(), managedObject.GetName(), err)
 			}
 			log.Log.Info(fmt.Sprintf("created %s/%s", managedObject.GetObjectKind().GroupVersionKind().Kind, managedObject.GetName()))
 		}
@@ -167,17 +168,20 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			managedObjects := []client.Object{
 				postgres.GenerateSA(),
 				postgres.GenerateCM(),
+				postgres.GenerateSecrets(),
 				postgres.GenerateSTS(),
 			}
 			for _, managedObject := range managedObjects {
 				var errors []string
+				log.Log.Info(fmt.Sprintf("deleting managed object %s/%s", managedObject.GetObjectKind().GroupVersionKind(), managedObject.GetName()))
 				if err := r.Delete(ctx, managedObject); err != nil {
-					errors = append(errors, fmt.Sprintf("could not delete object %s/%s: %e", managedObject.GetObjectKind(), managedObject.GetName(), err))
+					errors = append(errors, fmt.Sprintf("could not delete object %s/%s: %e", managedObject.GetObjectKind().GroupVersionKind(), managedObject.GetName(), err))
 				}
 				if len(errors) > 0 {
 					return ctrl.Result{}, fmt.Errorf(strings.Join(errors, ";"))
 				}
 			}
+			log.Log.Info(fmt.Sprintf("finalizing deletion of postgres/%s", postgres.GetName()))
 			controllerutil.RemoveFinalizer(&postgres, finalizerName)
 			if err := r.Update(ctx, &postgres); err != nil {
 				return ctrl.Result{}, err
